@@ -5,3 +5,4 @@ pyarrow
 pytz
 pyotp
 websocket-client
+logzero
