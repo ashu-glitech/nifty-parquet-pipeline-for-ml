@@ -4,7 +4,7 @@ import pytz
 import threading
 import os
 import pandas as pd
-from flask import Flask
+from flask import Flask, render_template_string
 from SmartApi import SmartConnect
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 import pyotp
@@ -90,17 +90,17 @@ HTML_TEMPLATE = """
 <body>
     <div class="card">
         <h1>🦅 HFT Digital Twin Collector</h1>
-        <div class="status-box {status_class}">
-            {pulse_html} {status_message}
+        <div class="status-box {{status_class}}">
+            {{pulse_html | safe}} {{status_message}}
         </div>
         <div class="stats">
             <div class="stat-item">
                 <div class="stat-label">Total Ticks Today</div>
-                <div class="stat-value">{total_ticks}</div>
+                <div class="stat-value">{{total_ticks}}</div>
             </div>
             <div class="stat-item">
                 <div class="stat-label">RAM Buffer</div>
-                <div class="stat-value">{ram_rows} <span style="font-size:12px;color:#8b949e;">/ {buffer_limit}</span></div>
+                <div class="stat-value">{{ram_rows}} <span style="font-size:12px;color:#8b949e;">/ {{buffer_limit}}</span></div>
             </div>
         </div>
     </div>
@@ -119,7 +119,7 @@ def home():
     status_class = "status-live" if is_open else "status-closed"
     pulse_html = '<span class="pulse"></span>' if is_open else '⏸️'
     
-    html = HTML_TEMPLATE.format(
+    html = render_template_string(HTML_TEMPLATE,
         status_class=status_class,
         pulse_html=pulse_html,
         status_message=msg,
