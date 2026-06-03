@@ -3,8 +3,11 @@ import datetime
 import pytz
 import threading
 import os
+import glob
+import zipfile
+import io
 import pandas as pd
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, send_file
 from SmartApi import SmartConnect
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 import pyotp
@@ -103,6 +106,9 @@ HTML_TEMPLATE = """
                 <div class="stat-value">{{ram_rows}} <span style="font-size:12px;color:#8b949e;">/ {{buffer_limit}}</span></div>
             </div>
         </div>
+        <a href="/download" style="display:inline-block; margin-top:25px; padding:12px 24px; background-color:#238636; color:#ffffff; text-decoration:none; border-radius:6px; font-weight:bold; border:1px solid rgba(240,246,252,0.1); transition: background-color 0.2s;">
+            📥 Download Today's Data (ZIP)
+        </a>
     </div>
 </body>
 </html>
@@ -128,6 +134,38 @@ def home():
         buffer_limit=BUFFER_LIMIT
     )
     return html
+
+@app.route('/download')
+def download_data():
+    # Force flush the current RAM buffer to disk before downloading
+    global tick_buffer
+    with buffer_lock:
+        if len(tick_buffer) > 0:
+            df = pd.DataFrame(tick_buffer)
+            tick_buffer = []
+            timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{DATA_DIR}/nifty_ticks_{timestamp_str}.parquet"
+            try:
+                df.to_parquet(filename, engine='pyarrow', index=False)
+            except:
+                pass
+                
+    memory_file = io.BytesIO()
+    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+        files = glob.glob(f"{DATA_DIR}/*.parquet")
+        if not files:
+            return "No data collected yet! Wait for market hours."
+        for file_path in files:
+            zf.write(file_path, os.path.basename(file_path))
+    
+    memory_file.seek(0)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d")
+    return send_file(
+        memory_file,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name=f'nifty_ticks_{timestamp}.zip'
+    )
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
