@@ -38,8 +38,10 @@ buffer_lock = threading.Lock()
 
 # Global state for real-time candle bodies
 current_minute_1 = -1
+current_minute_3 = -1
 current_minute_5 = -1
 open_1m = None
+open_3m = None
 open_5m = None
 
 # ==========================================
@@ -216,12 +218,16 @@ def on_data(wsapp, msg):
             # Real-time candle body calculation
             now_time = datetime.datetime.now(pytz.timezone('Asia/Kolkata'))
             minute = now_time.minute
+            minute_3 = minute // 3
             minute_5 = minute // 5
             
-            global current_minute_1, current_minute_5, open_1m, open_5m
+            global current_minute_1, current_minute_3, current_minute_5, open_1m, open_3m, open_5m
             if minute != current_minute_1:
                 current_minute_1 = minute
                 open_1m = ltp
+            if minute_3 != current_minute_3:
+                current_minute_3 = minute_3
+                open_3m = ltp
             if minute_5 != current_minute_5:
                 current_minute_5 = minute_5
                 open_5m = ltp
@@ -234,6 +240,7 @@ def on_data(wsapp, msg):
                 "total_buy_q": msg.get("total_buy_quantity", 0),
                 "total_sell_q": msg.get("total_sell_quantity", 0),
                 "body_1m": round(ltp - open_1m, 2) if open_1m is not None else 0.0,
+                "body_3m": round(ltp - open_3m, 2) if open_3m is not None else 0.0,
                 "body_5m": round(ltp - open_5m, 2) if open_5m is not None else 0.0,
             }
             
