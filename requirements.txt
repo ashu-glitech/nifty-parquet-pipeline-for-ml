@@ -1,0 +1,7 @@
+smartapi-python
+pandas
+flask
+pyarrow
+pytz
+pyotp
+websocket-client
