@@ -36,6 +36,12 @@ total_ticks_today = 0
 last_reset_date = None
 buffer_lock = threading.Lock()
 
+# Global state for real-time candle bodies
+current_minute_1 = -1
+current_minute_5 = -1
+open_1m = None
+open_5m = None
+
 # ==========================================
 # ⏰ MARKET TIMING LOGIC (IST)
 # ==========================================
@@ -205,13 +211,30 @@ def on_data(wsapp, msg):
     try:
         # Check if it's a SnapQuote message
         if 'subscription_mode' in msg and msg['subscription_mode'] == 3:
+            ltp = float(msg.get("last_traded_price", 0)) / 100.0
+            
+            # Real-time candle body calculation
+            now_time = datetime.datetime.now(pytz.timezone('Asia/Kolkata'))
+            minute = now_time.minute
+            minute_5 = minute // 5
+            
+            global current_minute_1, current_minute_5, open_1m, open_5m
+            if minute != current_minute_1:
+                current_minute_1 = minute
+                open_1m = ltp
+            if minute_5 != current_minute_5:
+                current_minute_5 = minute_5
+                open_5m = ltp
+                
             row = {
                 "ltt": msg.get("last_traded_time", int(time.time()*1000)),
-                "ltp": float(msg.get("last_traded_price", 0)) / 100.0,
+                "ltp": ltp,
                 "ltq": msg.get("last_traded_quantity", 0),
                 "volume": msg.get("volume_traded_for_the_day", 0),
                 "total_buy_q": msg.get("total_buy_quantity", 0),
                 "total_sell_q": msg.get("total_sell_quantity", 0),
+                "body_1m": round(ltp - open_1m, 2) if open_1m is not None else 0.0,
+                "body_5m": round(ltp - open_5m, 2) if open_5m is not None else 0.0,
             }
             
             # Extract Top 5 Best Buy and Sell
