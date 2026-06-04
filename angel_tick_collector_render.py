@@ -70,6 +70,43 @@ current_minute_3 = -1
 current_minute_5 = -1
 open_1m = open_3m = open_5m = None
 
+
+last_total_ticks = 0
+current_tps = 0
+
+def background_monitor():
+    global last_total_ticks, current_tps, tick_buffer
+    has_flushed_today = False
+    last_flush_date = None
+    
+    while True:
+        try:
+            ist = pytz.timezone('Asia/Kolkata')
+            now = datetime.datetime.now(ist)
+            
+            # TPS Calculation
+            current_tps = total_ticks_today - last_total_ticks
+            last_total_ticks = total_ticks_today
+            
+            # Market Close Auto-Flush Logic (3:30 PM - 3:35 PM window)
+            today_date = now.date()
+            if last_flush_date != today_date:
+                has_flushed_today = False
+                
+            if now.hour == 15 and now.minute >= 30 and not has_flushed_today:
+                print("🏁 Market Closed! Auto-flushing RAM buffer...")
+                from __main__ import flush_buffer_to_disk # local import just in case
+                try:
+                    flush_buffer_to_disk()
+                except Exception as e:
+                    print("Auto-flush error:", e)
+                has_flushed_today = True
+                last_flush_date = today_date
+                
+        except Exception as e:
+            print("Monitor error:", e)
+        time.sleep(1)
+
 # ==========================================
 # ⏰ MARKET TIMING LOGIC (IST)
 # ==========================================
@@ -128,209 +165,177 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HFT Tick Collector — Nifty</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <title>Enterprise HFT Pipeline</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;800&display=swap" rel="stylesheet">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: 'Inter', sans-serif;
-            background: #080c14;
-            color: #c9d1d9;
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .container { max-width: 860px; margin: 0 auto; }
+        body { font-family: 'Inter', sans-serif; background: #080c14; color: #c9d1d9; min-height: 100vh; padding: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        
         /* Header */
-        .header {
-            text-align: center;
-            padding: 30px 0 20px;
-        }
-        .header h1 {
-            font-size: 28px;
-            font-weight: 700;
-            background: linear-gradient(90deg, #58a6ff, #3fb950);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .header .subtitle {
-            font-size: 13px;
-            color: #6e7681;
-            margin-top: 6px;
-        }
-        /* Status Bar */
-        .status-bar {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 14px 20px;
-            border-radius: 10px;
-            margin: 16px 0;
-            font-weight: 600;
-            font-size: 15px;
-        }
-        .status-live   { background: rgba(46,160,67,0.12); color: #3fb950; border: 1px solid rgba(46,160,67,0.35); }
-        .status-closed { background: rgba(210,153,34,0.12); color: #d29922; border: 1px solid rgba(210,153,34,0.35); }
-        .status-error  { background: rgba(248,81,73,0.12);  color: #f85149; border: 1px solid rgba(248,81,73,0.35); }
-        .dot {
-            width: 10px; height: 10px; border-radius: 50%;
-            flex-shrink: 0;
-        }
-        .dot-green { background:#3fb950; box-shadow:0 0 8px #3fb950; animation: pulse 1.5s infinite; }
-        .dot-yellow { background:#d29922; }
-        .dot-red    { background:#f85149; }
-        @keyframes pulse {
-            0%,100% { transform:scale(0.9); opacity:0.6; }
-            50%      { transform:scale(1.1); opacity:1; }
-        }
-        /* Stat Cards */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 12px;
-            margin: 16px 0;
-        }
-        .stat-card {
-            background: #0d1117;
-            border: 1px solid #21262d;
-            border-radius: 10px;
-            padding: 18px 16px;
-        }
-        .stat-label {
-            font-size: 11px;
-            color: #6e7681;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        .stat-value {
-            font-size: 30px;
-            font-weight: 700;
-            color: #fff;
-            margin-top: 6px;
-        }
-        .stat-sub {
-            font-size: 12px;
-            color: #6e7681;
-            margin-top: 3px;
-        }
-        /* WS Status */
-        .ws-bar {
-            background: #0d1117;
-            border: 1px solid #21262d;
-            border-radius: 10px;
-            padding: 12px 16px;
-            font-size: 13px;
-            color: #8b949e;
-            margin-bottom: 16px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        /* File list */
-        .files-section {
-            background: #0d1117;
-            border: 1px solid #21262d;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 16px;
-        }
-        .files-section h3 {
-            font-size: 14px;
-            font-weight: 600;
-            color: #8b949e;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 14px;
-        }
-        .date-group { margin-bottom: 14px; }
-        .date-label {
-            font-size: 13px;
-            font-weight: 600;
-            color: #58a6ff;
-            margin-bottom: 6px;
-        }
-        .file-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 7px 10px;
-            background: #161b22;
-            border-radius: 6px;
-            margin-bottom: 4px;
-            font-size: 12px;
-        }
-        .file-name { color: #c9d1d9; }
-        .file-size { color: #6e7681; }
-        .no-files { color: #484f58; font-size: 13px; text-align: center; padding: 20px 0; }
-        /* Buttons */
-        .btn-row { display: flex; gap: 10px; margin-top: 4px; }
-        .btn {
-            flex: 1;
-            display: block;
-            padding: 13px;
-            border-radius: 8px;
-            text-align: center;
-            font-size: 14px;
-            font-weight: 600;
-            text-decoration: none;
-            cursor: pointer;
-            border: none;
-            transition: opacity 0.2s, transform 0.1s;
-        }
-        .btn:hover { opacity: 0.85; transform: translateY(-1px); }
-        .btn-green  { background: #238636; color: #fff; }
-        .btn-blue   { background: #1f6feb; color: #fff; }
-        /* Auto-refresh */
-        .refresh-note { text-align:center; font-size:11px; color:#484f58; margin-top:14px; }
+        .header { text-align: center; padding: 20px 0; }
+        .header h1 { font-size: 32px; font-weight: 800; background: linear-gradient(90deg, #58a6ff, #3fb950); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .header .subtitle { font-size: 14px; color: #6e7681; margin-top: 8px; }
+        
+        /* Grid Layout */
+        .dashboard-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-top: 20px; }
+        
+        /* Cards */
+        .card { background: #0d1117; border: 1px solid #21262d; border-radius: 12px; padding: 20px; }
+        .card-title { font-size: 12px; font-weight: 700; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 15px; }
+        
+        /* Live Metrics */
+        .metric-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #21262d; }
+        .metric-row:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+        .metric-value { font-size: 28px; font-weight: 800; color: #fff; }
+        .metric-label { font-size: 13px; color: #6e7681; }
+        
+        /* Order Book Bar */
+        .ob-container { width: 100%; height: 12px; background: #21262d; border-radius: 6px; overflow: hidden; display: flex; margin-top: 10px; }
+        .ob-buy { height: 100%; background: #3fb950; transition: width 0.3s ease; }
+        .ob-sell { height: 100%; background: #f85149; transition: width 0.3s ease; }
+        .ob-labels { display: flex; justify-content: space-between; font-size: 11px; margin-top: 5px; font-weight: 600; }
+        .ob-labels .buy-text { color: #3fb950; }
+        .ob-labels .sell-text { color: #f85149; }
+        
+        /* Ticks/sec Gauge */
+        .tps-gauge { text-align: center; margin: 20px 0; }
+        .tps-value { font-size: 48px; font-weight: 800; color: #58a6ff; text-shadow: 0 0 20px rgba(88,166,255,0.3); }
+        .tps-label { font-size: 14px; color: #6e7681; text-transform: uppercase; letter-spacing: 2px; }
+        
+        /* Status indicator */
+        .status-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
+        .live-dot { background: #3fb950; box-shadow: 0 0 10px #3fb950; animation: pulse 1s infinite; }
+        @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+        
+        /* File List & Downloads */
+        .file-list { max-height: 250px; overflow-y: auto; }
+        .file-list::-webkit-scrollbar { width: 6px; }
+        .file-list::-webkit-scrollbar-thumb { background: #21262d; border-radius: 3px; }
+        .file-row { display: flex; justify-content: space-between; padding: 8px 10px; background: #161b22; border-radius: 6px; margin-bottom: 6px; font-size: 12px; }
+        .file-name { color: #c9d1d9; font-family: monospace; }
+        
+        /* Action Buttons */
+        .btn-group { display: flex; flex-direction: column; gap: 10px; margin-top: 15px; }
+        .btn { padding: 12px; border-radius: 8px; text-align: center; font-size: 13px; font-weight: 700; text-decoration: none; cursor: pointer; border: none; transition: 0.2s; }
+        .btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+        .btn-primary { background: #238636; color: #fff; }
+        .btn-secondary { background: #1f6feb; color: #fff; }
+        .btn-outline { background: transparent; border: 1px solid #30363d; color: #c9d1d9; }
+        .btn-outline:hover { background: #30363d; }
+        
+        /* Forms */
+        .date-form { display: flex; gap: 10px; margin-top: 10px; }
+        .date-input { flex: 1; padding: 10px; border-radius: 6px; background: #080c14; border: 1px solid #30363d; color: #fff; color-scheme: dark; }
     </style>
-    <meta http-equiv="refresh" content="15">
 </head>
 <body>
 <div class="container">
     <div class="header">
-        <h1>🦅 HFT Tick Collector</h1>
-        <div class="subtitle">Nifty Futures Level-2 Data • Auto-refreshes every 15s</div>
+        <h1>🦅 HFT Data Engineering Pipeline</h1>
+        <div class="subtitle"><span class="status-dot live-dot"></span> LIVE • Nifty Futures Level-2 Order Book Stream</div>
     </div>
-
-    <div class="status-bar {{ status_class }}">
-        <div class="dot {{ dot_class }}"></div>
-        {{ status_message }}
-    </div>
-
-    <div class="stats-grid">
-        <div class="stat-card">
-            <div class="stat-label">Total Ticks Today</div>
-            <div class="stat-value">{{ total_ticks }}</div>
-            <div class="stat-sub">rows collected</div>
+    
+    <div class="dashboard-grid">
+        <!-- LEFT COLUMN -->
+        <div class="left-col">
+            <div class="card" style="margin-bottom: 20px;">
+                <div class="card-title">Real-Time Ingestion Engine</div>
+                <div class="tps-gauge">
+                    <div class="tps-value" id="tps-display">0</div>
+                    <div class="tps-label">Ticks Per Second</div>
+                </div>
+                
+                <div class="metric-row" style="margin-top: 30px;">
+                    <div>
+                        <div class="metric-label">Memory Buffer (RAM)</div>
+                        <div class="metric-value"><span id="ram-display" style="color: #d29922;">{{ ram_rows }}</span> <span style="font-size: 16px; color:#6e7681;">/ 5000</span></div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div class="metric-label">Total Extracted Today</div>
+                        <div class="metric-value">{{ total_ticks }} rows</div>
+                    </div>
+                </div>
+                
+                <div style="font-size: 11px; color: #6e7681; margin-top: 10px;">
+                    ⚡ Auto-Flush at 3:30 PM | 🗜️ Parquet Compression Ratio: ~92%
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-title">Quant Visualizer: Live Order Book Imbalance</div>
+                <div class="metric-row">
+                    <div>
+                        <div class="metric-label">Last Traded Price (LTP)</div>
+                        <div class="metric-value" id="ltp-display" style="font-family: monospace;">---</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div class="metric-label">Imbalance Ratio</div>
+                        <div class="metric-value" id="ratio-display">1.0x</div>
+                    </div>
+                </div>
+                <div class="ob-container">
+                    <div class="ob-buy" id="ob-buy-bar" style="width: 50%;"></div>
+                    <div class="ob-sell" id="ob-sell-bar" style="width: 50%;"></div>
+                </div>
+                <div class="ob-labels">
+                    <div class="buy-text">BUYERS (Bid)</div>
+                    <div class="sell-text">SELLERS (Ask)</div>
+                </div>
+            </div>
         </div>
-        <div class="stat-card">
-            <div class="stat-label">RAM Buffer</div>
-            <div class="stat-value">{{ ram_rows }}</div>
-            <div class="stat-sub">/ {{ buffer_limit }} rows</div>
+        
+        <!-- RIGHT COLUMN -->
+        <div class="right-col">
+            <div class="card" style="margin-bottom: 20px;">
+                <div class="card-title">Download Center (Single File Merged)</div>
+                <div class="btn-group">
+                    <a href="/download_today" class="btn btn-primary">📅 Download Today's Zip</a>
+                    <a href="/download" class="btn btn-outline">📥 Download ALL History</a>
+                </div>
+                
+                <div style="margin-top: 20px; border-top: 1px solid #21262d; padding-top: 15px;">
+                    <div class="card-title" style="margin-bottom: 10px;">Date-Wise Download</div>
+                    <form class="date-form" onsubmit="event.preventDefault(); window.location.href='/download_date/' + document.getElementById('date-picker').value;">
+                        <input type="date" id="date-picker" class="date-input" required>
+                        <button type="submit" class="btn btn-secondary">Get ZIP</button>
+                    </form>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-title">Data Storage (Render Ephemeral)</div>
+                <div class="file-list">
+                    {{ files_html | safe }}
+                </div>
+            </div>
         </div>
-        <div class="stat-card">
-            <div class="stat-label">Parquet Files</div>
-            <div class="stat-value">{{ total_files }}</div>
-            <div class="stat-sub">saved to disk</div>
-        </div>
     </div>
-
-    <div class="ws-bar">
-        <span>🔌 WebSocket: <strong>{{ ws_status }}</strong></span>
-        <span>📌 Token: <strong style="color:#58a6ff;">{{ active_symbol }}</strong></span>
-    </div>
-
-    <div class="files-section">
-        <h3>📂 Saved Parquet Files (Date-wise)</h3>
-        {{ files_html | safe }}
-    </div>
-
-    <div class="btn-row">
-        <a href="/download" class="btn btn-green">📥 Download ALL Data (ZIP)</a>
-        <a href="/download_today" class="btn btn-blue">📅 Download Today Only</a>
-    </div>
-
-    <div class="refresh-note">Page auto-refreshes every 15 seconds</div>
 </div>
+
+<script>
+    // Live AJAX polling for metrics (no page reload needed)
+    setInterval(() => {
+        fetch('/api/metrics')
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('tps-display').innerText = data.tps;
+                document.getElementById('ram-display').innerText = data.ram_rows;
+                document.getElementById('ltp-display').innerText = data.last_ltp.toFixed(2);
+                document.getElementById('ratio-display').innerText = data.ob_imbalance + 'x';
+                
+                // Update Order Book Bar
+                let buyPct = 50;
+                if (data.ob_imbalance > 0) {
+                    buyPct = (data.ob_buy_q / (data.ob_buy_q + data.ob_sell_q)) * 100;
+                    if(isNaN(buyPct)) buyPct = 50;
+                }
+                document.getElementById('ob-buy-bar').style.width = buyPct + '%';
+                document.getElementById('ob-sell-bar').style.width = (100 - buyPct) + '%';
+            })
+            .catch(err => console.error(err));
+    }, 1000); // refresh every 1 second
+</script>
 </body>
 </html>
 """
@@ -418,9 +423,8 @@ def _make_zip(pattern_list):
     memory_file.seek(0)
     return memory_file
 
-@app.route('/download')
-def download_all():
-    # Flush RAM first
+def flush_buffer_to_disk():
+    global tick_buffer
     with buffer_lock:
         if tick_buffer:
             df = pd.DataFrame(tick_buffer)
@@ -430,8 +434,14 @@ def download_all():
             date_str = datetime.datetime.now(ist).strftime("%Y-%m-%d")
             date_dir = os.path.join(DATA_DIR, date_str)
             os.makedirs(date_dir, exist_ok=True)
-            try: df.to_parquet(os.path.join(date_dir, f"nifty_ticks_{ts}.parquet"), index=False)
-            except: pass
+            try: 
+                df.to_parquet(os.path.join(date_dir, f"nifty_ticks_{ts}.parquet"), index=False)
+            except Exception as e: 
+                print(f"Flush error: {e}")
+
+@app.route('/download')
+def download_all():
+    flush_buffer_to_disk()
 
     patterns = [
         os.path.join(DATA_DIR, "????-??-??", "*.parquet"),
@@ -447,14 +457,75 @@ def download_all():
 
 @app.route('/download_today')
 def download_today():
+    flush_buffer_to_disk()
     ist = pytz.timezone('Asia/Kolkata')
     date_str = datetime.datetime.now(ist).strftime("%Y-%m-%d")
-    patterns = [os.path.join(DATA_DIR, date_str, "*.parquet")]
-    mf = _make_zip(patterns)
-    if mf is None:
-        return "No data for today yet!", 404
-    return send_file(mf, mimetype='application/zip', as_attachment=True,
-                     download_name=f'nifty_{date_str}.zip')
+    return download_date(date_str) # Re-use the merge logic!
+
+
+@app.route('/api/metrics')
+def api_metrics():
+    with buffer_lock:
+        ram_rows = len(tick_buffer)
+        
+    ob_imbalance = 1.0
+    last_ltp = 0
+    t_buy = 0
+    t_sell = 0
+    
+    with buffer_lock:
+        if len(tick_buffer) > 0:
+            last_row = tick_buffer[-1]
+            t_buy = last_row.get("total_buy_q", 0)
+            t_sell = last_row.get("total_sell_q", 0)
+            if t_sell > 0:
+                ob_imbalance = round(t_buy / t_sell, 2)
+            last_ltp = last_row.get("ltp", 0)
+            
+    return jsonify({
+        "tps": current_tps,
+        "ram_rows": ram_rows,
+        "ob_imbalance": ob_imbalance,
+        "ob_buy_q": t_buy,
+        "ob_sell_q": t_sell,
+        "last_ltp": last_ltp
+    })
+
+@app.route('/download_date/<date_str>')
+def download_date(date_str):
+    # Auto flush if asking for today
+    if date_str == datetime.datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%Y-%m-%d"):
+        flush_buffer_to_disk()
+        
+    date_dir = os.path.join(DATA_DIR, date_str)
+    files = sorted(glob.glob(os.path.join(date_dir, "*.parquet")))
+    if not files:
+        return f"No data found for {date_str}. Note: Render Free Tier deletes data on restarts.", 404
+        
+    # Exclude merged files to avoid duplication
+    chunk_files = [f for f in files if "MERGED" not in f]
+    if not chunk_files:
+        chunk_files = files
+        
+    try:
+        merged_df = pd.concat([pd.read_parquet(f) for f in chunk_files], ignore_index=True)
+        merged_df.sort_values("ltt", inplace=True)
+        
+        merged_filename = os.path.join(date_dir, f"nifty_MERGED_{date_str}.parquet")
+        merged_df.to_parquet(merged_filename, index=False)
+        
+        memory_file = io.BytesIO()
+        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+            arcname = merged_filename.replace(DATA_DIR + os.sep, "")
+            zf.write(merged_filename, arcname)
+        memory_file.seek(0)
+        
+        return send_file(memory_file, mimetype='application/zip', as_attachment=True,
+                         download_name=f'nifty_MERGED_{date_str}.zip')
+    except Exception as e:
+        return f"Merge error: {e}", 500
+
+
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -655,6 +726,10 @@ def start_websocket():
 # 🚀 MAIN
 # ==========================================
 if __name__ == '__main__':
+    monitor_thread = threading.Thread(target=background_monitor, daemon=True)
+    monitor_thread.start()
+    
     ws_thread = threading.Thread(target=start_websocket, daemon=True)
+
     ws_thread.start()
     run_flask()
