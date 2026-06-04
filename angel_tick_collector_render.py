@@ -11,6 +11,8 @@ from flask import Flask, render_template_string, send_file
 from SmartApi import SmartConnect
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 import pyotp
+import urllib.request
+import json
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -20,9 +22,34 @@ CLIENT_CODE = "A1070779"
 PASSWORD = "5555"
 TOTP_SECRET = "JJ4RKS5OISHNHXOFPZ5JHH26EY"
 
+# ==========================================
+# 🤖 AUTO-TOKEN FETCH LOGIC
+# ==========================================
+def get_latest_nifty_future_token():
+    print("🌐 Fetching latest NIFTY Futures token from Angel One (Auto-Smart)...")
+    try:
+        url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode())
+        
+        # Filter NIFTY Futures
+        nifty_futs = [x for x in data if x['name'] == 'NIFTY' and x['instrumenttype'] == 'FUTIDX']
+        
+        # Sort by expiry to get the nearest month
+        nifty_futs.sort(key=lambda x: datetime.datetime.strptime(x['expiry'], '%d%b%Y'))
+        
+        latest_token = nifty_futs[0]['token']
+        latest_symbol = nifty_futs[0]['symbol']
+        print(f"✅ Auto-Token Found: {latest_symbol} (Token: {latest_token})")
+        return latest_token
+    except Exception as e:
+        print(f"⚠️ Failed to auto-fetch token, using fallback '62329' (June 26): {e}")
+        return "62329"
+
 # We use Nifty Futures Token (NFO) for Level 2 Depth
-# Token '62329' is for NIFTY30JUN26FUT. (Needs to be updated upon expiry)
-TOKENS = [{"exchangeType": 2, "tokens": ["62329"]}]
+# Token is dynamically fetched upon startup to handle monthly expiries automatically.
+ACTIVE_TOKENS = [{"exchangeType": 2, "tokens": [get_latest_nifty_future_token()]}]
 
 BUFFER_LIMIT = 5000  # Number of rows to hold in RAM before saving
 DATA_DIR = "market_data"
@@ -268,7 +295,7 @@ def on_data(wsapp, msg):
 def on_open(wsapp):
     print("✅ WebSocket Connected!")
     # Mode 3 = SnapQuote
-    wsapp.subscribe("nifty_stream", 3, TOKENS)
+    wsapp.subscribe("nifty_stream", 3, ACTIVE_TOKENS)
 
 def on_error(wsapp, error):
     print(f"🛑 WebSocket Error: {error}")
