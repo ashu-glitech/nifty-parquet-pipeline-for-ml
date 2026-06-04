@@ -62,6 +62,7 @@ total_ticks_today  = 0
 last_reset_date    = None
 buffer_lock        = threading.Lock()
 ws_status          = "🔄 Connecting..."
+sws                = None   # global SmartWebSocketV2 object (needed for subscribe)
 
 # Candle body tracking
 current_minute_1 = -1
@@ -515,19 +516,19 @@ def on_data(wsapp, msg):
         print(f"❌ on_data error: {e}")
 
 def on_open(wsapp):
-    global ws_status
-    ws_status = "✅ Connected — Subscribing (Mode 1 LTP test)..."
+    global ws_status, sws
+    ws_status = "✅ Connected — Subscribing..."
     print("="*60, flush=True)
-    print("✅ WebSocket on_open FIRED! Trying Mode 1 (LTP only) first...", flush=True)
+    print("✅ WebSocket on_open FIRED! Subscribing via sws object...", flush=True)
     print(f"   Token: {ACTIVE_TOKEN}  Symbol: {ACTIVE_SYMBOL}", flush=True)
     print(f"   Tokens list: {ACTIVE_TOKENS}", flush=True)
     print("="*60, flush=True)
     try:
-        # Test with Mode 1 (LTP) first - basic access
-        # Mode 1 = LTP only, Mode 2 = Quote, Mode 3 = SnapQuote (Level2)
-        wsapp.subscribe("nifty_ltp_test", 1, ACTIVE_TOKENS)
-        print("📡 Mode 1 subscription sent. Waiting for response...", flush=True)
-        ws_status = "📡 Subscribed Mode 1 (LTP) — waiting for data..."
+        # sws.subscribe() — NOT wsapp.subscribe() (wsapp is raw websocket-client object)
+        # Mode 3 = SnapQuote (Full Level-2 Order Book)
+        sws.subscribe("nifty_stream", 3, ACTIVE_TOKENS)
+        print("📡 Mode 3 (SnapQuote) subscription sent!", flush=True)
+        ws_status = "📡 Subscribed Mode 3 (SnapQuote) — receiving data..."
     except Exception as e:
         print(f"❌ Subscribe ERROR: {e}", flush=True)
         ws_status = f"❌ Subscribe failed: {e}"
@@ -617,8 +618,9 @@ def start_websocket():
         # ── Start WebSocket with HUGE retry (practically infinite) ───
         try:
             ws_status = "🔌 Connecting WebSocket..."
-            print("🦅 Starting WebSocket with 9999 retries (nonstop data)...")
+            print("🦅 Starting WebSocket with 9999 retries (nonstop data)...", flush=True)
 
+            global sws
             sws = SmartWebSocketV2(
                 jwt_token, API_KEY, CLIENT_CODE, feed_token,
                 max_retry_attempt = 9999,   # Never give up!
