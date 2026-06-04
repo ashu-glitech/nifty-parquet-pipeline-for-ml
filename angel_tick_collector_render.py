@@ -20,9 +20,9 @@ CLIENT_CODE = "A1070779"
 PASSWORD = "5555"
 TOTP_SECRET = "JJ4RKS5OISHNHXOFPZ5JHH26EY"
 
-# We use Nifty 50 Token (Check OpenAPIScripMaster.json if this changes)
-# Format for V2 WebSocket subscribe is "exchangeType|token"
-TOKENS = ["nse_cm|26000"] # 26000 is Nifty 50 Index (Just an example, actual token for Nifty 50 derivative/cash might differ)
+# We use Nifty Futures Token (NFO) for Level 2 Depth
+# Token '62329' is for NIFTY30JUN26FUT. (Needs to be updated upon expiry)
+TOKENS = [{"exchangeType": 2, "tokens": ["62329"]}]
 
 BUFFER_LIMIT = 5000  # Number of rows to hold in RAM before saving
 DATA_DIR = "market_data"
