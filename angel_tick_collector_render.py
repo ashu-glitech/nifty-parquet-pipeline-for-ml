@@ -532,50 +532,104 @@ def on_close(wsapp):
     save_parquet_chunk()
 
 # ==========================================
-# 🔄 SMART RECONNECT LOOP
+# 🔄 ONE LOGIN → ALL DAY NONSTOP DATA
 # ==========================================
-def start_websocket():
+def do_login():
+    """Login ONCE. Returns (sws_object) or None on failure."""
     global ws_status
+    try:
+        print("🔐 ONE-TIME Login to Angel One...")
+        ws_status = "🔐 Logging in (one-time)..."
+        obj  = SmartConnect(api_key=API_KEY)
+        totp = pyotp.TOTP(TOTP_SECRET).now()
+        data = obj.generateSession(CLIENT_CODE, PASSWORD, totp)
+
+        if not data.get('status'):
+            print(f"❌ Login Failed: {data.get('message')}")
+            ws_status = f"❌ Login Failed: {data.get('message','Unknown')}"
+            return None, None
+
+        feed_token = obj.getfeedToken()
+        jwt_token  = data['data']['jwtToken']
+        print("✅ ONE-TIME Login Successful! JWT stored for the day.")
+        return jwt_token, feed_token
+
+    except Exception as e:
+        print(f"🛑 Login exception: {e}")
+        ws_status = f"🛑 Login Error: {str(e)[:60]}"
+        return None, None
+
+
+def start_websocket():
+    """
+    Strategy:
+    - LOGIN only ONCE per day at startup (or after midnight reset).
+    - WebSocket internally retries 9999 times without re-login.
+    - Only re-login if JWT actually expires (market opens next day).
+    - 9:15 AM → 3:30 PM : zero data miss. Water-like flow!
+    """
+    global ws_status
+
+    login_date = None   # track which day we logged in
+    jwt_token  = None
+    feed_token = None
+
     while True:
-        try:
-            is_open, _ = get_market_status()
-            if not is_open:
-                ws_status = "😴 Market Closed — Waiting..."
-                print("😴 Market closed, waiting 60s before retry...")
-                time.sleep(60)
+        ist  = pytz.timezone('Asia/Kolkata')
+        now  = datetime.datetime.now(ist)
+        today = now.date()
+
+        # ── Wait until market hours ──────────────────────────────────
+        is_open, status_msg = get_market_status()
+        if not is_open:
+            ws_status = f"😴 {status_msg}"
+            time.sleep(30)
+            continue
+
+        # ── Login ONCE per calendar day ──────────────────────────────
+        if login_date != today or jwt_token is None:
+            jwt_token, feed_token = do_login()
+            if jwt_token is None:
+                print("⏳ Login failed — retrying in 15s...")
+                time.sleep(15)
                 continue
+            login_date = today
+            print(f"🔑 Token valid for today ({today}). Will NOT re-login until tomorrow.")
 
-            print("🔐 Logging into Angel One...")
-            ws_status = "🔐 Logging in..."
-            obj  = SmartConnect(api_key=API_KEY)
-            totp = pyotp.TOTP(TOTP_SECRET).now()
-            data = obj.generateSession(CLIENT_CODE, PASSWORD, totp)
+        # ── Start WebSocket with HUGE retry (practically infinite) ───
+        try:
+            ws_status = "🔌 Connecting WebSocket..."
+            print("🦅 Starting WebSocket with 9999 retries (nonstop data)...")
 
-            if data.get('status'):
-                feed_token = obj.getfeedToken()
-                jwt_token  = data['data']['jwtToken']
-                print("✅ Login OK — Starting WebSocket...")
-                ws_status = "🔌 WebSocket Connecting..."
+            sws = SmartWebSocketV2(
+                jwt_token, API_KEY, CLIENT_CODE, feed_token,
+                max_retry_attempt = 9999,   # Never give up!
+                retry_delay       = 2       # 2s between auto-retries
+            )
+            sws.on_open  = on_open
+            sws.on_data  = on_data
+            sws.on_error = on_error
+            sws.on_close = on_close
 
-                sws = SmartWebSocketV2(jwt_token, API_KEY, CLIENT_CODE, feed_token,
-                                       max_retry_attempt=50,
-                                       retry_delay=5)
-                sws.on_open  = on_open
-                sws.on_data  = on_data
-                sws.on_error = on_error
-                sws.on_close = on_close
-                sws.connect()
-            else:
-                msg = data.get('message', 'Unknown')
-                print(f"❌ Login Failed: {msg}")
-                ws_status = f"❌ Login Failed: {msg}"
+            sws.connect()  # ← Blocks here. Internal library retries 9999 times.
 
         except Exception as e:
-            print(f"🛑 WS loop exception: {e}")
-            ws_status = f"🛑 Exception: {str(e)[:60]}"
+            err = str(e).lower()
+            print(f"🛑 WebSocket dropped: {e}")
 
-        print("🔄 Reconnecting in 30s...")
-        time.sleep(30)
+            # If it's an auth / token error → force re-login
+            if any(w in err for w in ['auth', 'token', 'unauthorized', '401', 'expired']):
+                print("🔑 JWT expired! Will re-login on next loop.")
+                jwt_token  = None
+                feed_token = None
+                login_date = None
+                ws_status  = "🔑 JWT expired — Re-logging in..."
+            else:
+                ws_status = f"🔄 Reconnecting... ({str(e)[:40]})"
+
+        # Short sleep then outer loop re-checks market hours & reconnects
+        print("⏳ 10s pause then reconnect check...")
+        time.sleep(10)
 
 # ==========================================
 # 🚀 MAIN
