@@ -6,3 +6,5 @@ pytz
 pyotp
 websocket-client
 logzero
+google-api-python-client
+google-auth

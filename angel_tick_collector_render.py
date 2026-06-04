@@ -13,6 +13,9 @@ from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 import pyotp
 import urllib.request
 import json
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -70,12 +73,14 @@ current_minute_3 = -1
 current_minute_5 = -1
 open_1m = open_3m = open_5m = None
 
+drive_upload_status = "Waiting for Market Close"
+last_uploaded_file = None
 
 last_total_ticks = 0
 current_tps = 0
 
 def background_monitor():
-    global last_total_ticks, current_tps, tick_buffer
+    global last_total_ticks, current_tps, tick_buffer, drive_upload_status
     has_flushed_today = False
     last_flush_date = None
     
@@ -93,13 +98,17 @@ def background_monitor():
             if last_flush_date != today_date:
                 has_flushed_today = False
                 
-            if now.hour == 15 and now.minute >= 30 and not has_flushed_today:
-                print("🏁 Market Closed! Auto-flushing RAM buffer...")
-                from __main__ import flush_buffer_to_disk # local import just in case
+            if now.hour == 15 and now.minute >= 35 and not has_flushed_today:
+                print("🏁 Market Closed! Auto-flushing and backing up to Drive...")
+                from __main__ import flush_buffer_to_disk, create_daily_zip_file, upload_to_drive # local import just in case
                 try:
                     flush_buffer_to_disk()
+                    date_str = now.strftime("%Y-%m-%d")
+                    zip_file = create_daily_zip_file(date_str)
+                    if zip_file:
+                        upload_to_drive(zip_file)
                 except Exception as e:
-                    print("Auto-flush error:", e)
+                    print("Auto-flush/Drive error:", e)
                 has_flushed_today = True
                 last_flush_date = today_date
                 
@@ -301,6 +310,15 @@ HTML_TEMPLATE = """
                         <button type="submit" class="btn btn-secondary">Get ZIP</button>
                     </form>
                 </div>
+                <div style="margin-top: 20px; border-top: 1px solid #21262d; padding-top: 15px;">
+                    <div class="card-title" style="margin-bottom: 10px;">Cloud Backup (Google Drive)</div>
+                    <div class="metric-row" style="margin-bottom:0; padding-bottom:0; border:none;">
+                        <div>
+                            <div class="metric-label">Auto-Sync Status (3:35 PM)</div>
+                            <div class="metric-value" id="drive-status" style="font-size: 14px; color: #58a6ff;">Waiting for market close...</div>
+                        </div>
+                    </div>
+                </div>
             </div>
             
             <div class="card">
@@ -323,6 +341,7 @@ HTML_TEMPLATE = """
                 document.getElementById('ram-display').innerText = data.ram_rows;
                 document.getElementById('ltp-display').innerText = data.last_ltp.toFixed(2);
                 document.getElementById('ratio-display').innerText = data.ob_imbalance + 'x';
+                document.getElementById('drive-status').innerText = data.drive_status;
                 
                 // Update Order Book Bar
                 let buyPct = 50;
@@ -439,6 +458,60 @@ def flush_buffer_to_disk():
             except Exception as e: 
                 print(f"Flush error: {e}")
 
+def create_daily_zip_file(date_str):
+    date_dir = os.path.join(DATA_DIR, date_str)
+    if not os.path.exists(date_dir):
+        return None
+    files = sorted(glob.glob(os.path.join(date_dir, "*.parquet")))
+    chunk_files = [f for f in files if "MERGED" not in f]
+    if not chunk_files:
+        return None
+        
+    try:
+        merged_df = pd.concat([pd.read_parquet(f) for f in chunk_files], ignore_index=True)
+        merged_df.sort_values("ltt", inplace=True)
+        merged_filename = os.path.join(date_dir, f"nifty_MERGED_{date_str}.parquet")
+        merged_df.to_parquet(merged_filename, index=False)
+        
+        zip_path = os.path.join(date_dir, f"nifty_MERGED_{date_str}.zip")
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            arcname = merged_filename.replace(DATA_DIR + os.sep, "")
+            zf.write(merged_filename, arcname)
+        return zip_path
+    except Exception as e:
+        print(f"Merge error: {e}")
+        return None
+
+def upload_to_drive(file_path):
+    global drive_upload_status, last_uploaded_file
+    try:
+        gcp_json_str = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
+        folder_id = os.environ.get("GCP_DRIVE_FOLDER_ID")
+        
+        if not gcp_json_str or not folder_id:
+            drive_upload_status = "⚠️ Keys missing (Setup Render Env)"
+            return
+            
+        drive_upload_status = "🔄 Uploading to Drive..."
+        creds_dict = json.loads(gcp_json_str)
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict, scopes=['https://www.googleapis.com/auth/drive.file']
+        )
+        service = build('drive', 'v3', credentials=creds)
+        
+        file_metadata = {
+            'name': os.path.basename(file_path),
+            'parents': [folder_id]
+        }
+        media = MediaFileUpload(file_path, mimetype='application/zip')
+        file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        drive_upload_status = f"✅ Uploaded (ID: {file.get('id')})"
+        last_uploaded_file = os.path.basename(file_path)
+        print(f"✅ Google Drive Upload Success: {file_path}")
+    except Exception as e:
+        drive_upload_status = f"❌ Drive Error: {str(e)[:40]}"
+        print(f"❌ Google Drive Upload Error: {e}")
+
 @app.route('/download')
 def download_all():
     flush_buffer_to_disk()
@@ -488,7 +561,8 @@ def api_metrics():
         "ob_imbalance": ob_imbalance,
         "ob_buy_q": t_buy,
         "ob_sell_q": t_sell,
-        "last_ltp": last_ltp
+        "last_ltp": last_ltp,
+        "drive_status": drive_upload_status
     })
 
 @app.route('/download_date/<date_str>')
