@@ -516,46 +516,64 @@ def on_data(wsapp, msg):
 
 def on_open(wsapp):
     global ws_status
-    ws_status = "✅ Connected — Subscribing..."
-    print("✅ WebSocket Connected! Subscribing to Nifty Futures...")
-    wsapp.subscribe("nifty_stream", 3, ACTIVE_TOKENS)
+    ws_status = "✅ Connected — Subscribing (Mode 1 LTP test)..."
+    print("="*60, flush=True)
+    print("✅ WebSocket on_open FIRED! Trying Mode 1 (LTP only) first...", flush=True)
+    print(f"   Token: {ACTIVE_TOKEN}  Symbol: {ACTIVE_SYMBOL}", flush=True)
+    print(f"   Tokens list: {ACTIVE_TOKENS}", flush=True)
+    print("="*60, flush=True)
+    try:
+        # Test with Mode 1 (LTP) first - basic access
+        # Mode 1 = LTP only, Mode 2 = Quote, Mode 3 = SnapQuote (Level2)
+        wsapp.subscribe("nifty_ltp_test", 1, ACTIVE_TOKENS)
+        print("📡 Mode 1 subscription sent. Waiting for response...", flush=True)
+        ws_status = "📡 Subscribed Mode 1 (LTP) — waiting for data..."
+    except Exception as e:
+        print(f"❌ Subscribe ERROR: {e}", flush=True)
+        ws_status = f"❌ Subscribe failed: {e}"
 
 def on_error(wsapp, error):
     global ws_status
-    ws_status = f"🛑 Error: {error}"
-    print(f"🛑 WS Error: {error}")
+    ws_status = f"🛑 WS Error: {error}"
+    print(f"🛑 WS ERROR DETAIL: {repr(error)}", flush=True)
+    print(f"   Error type: {type(error).__name__}", flush=True)
 
 def on_close(wsapp):
     global ws_status
     ws_status = "🔄 Disconnected — Reconnecting..."
-    print("🧊 WebSocket Closed. Flushing buffer...")
+    print("🧊 WebSocket on_close FIRED. Flushing buffer...", flush=True)
     save_parquet_chunk()
 
 # ==========================================
 # 🔄 ONE LOGIN → ALL DAY NONSTOP DATA
 # ==========================================
 def do_login():
-    """Login ONCE. Returns (sws_object) or None on failure."""
+    """Login ONCE. Returns (jwt_token, feed_token) or (None, None) on failure."""
     global ws_status
     try:
-        print("🔐 ONE-TIME Login to Angel One...")
+        print("="*60, flush=True)
+        print("🔐 ONE-TIME Login to Angel One starting...", flush=True)
         ws_status = "🔐 Logging in (one-time)..."
         obj  = SmartConnect(api_key=API_KEY)
-        totp = pyotp.TOTP(TOTP_SECRET).now()
-        data = obj.generateSession(CLIENT_CODE, PASSWORD, totp)
+        totp_val = pyotp.TOTP(TOTP_SECRET).now()
+        print(f"   TOTP generated: {totp_val}", flush=True)
+        data = obj.generateSession(CLIENT_CODE, PASSWORD, totp_val)
+        print(f"   Login response status: {data.get('status')}", flush=True)
+        print(f"   Login response message: {data.get('message','N/A')}", flush=True)
 
         if not data.get('status'):
-            print(f"❌ Login Failed: {data.get('message')}")
+            print(f"❌ Login FAILED: {data.get('message')}", flush=True)
             ws_status = f"❌ Login Failed: {data.get('message','Unknown')}"
             return None, None
 
         feed_token = obj.getfeedToken()
         jwt_token  = data['data']['jwtToken']
-        print("✅ ONE-TIME Login Successful! JWT stored for the day.")
+        print(f"✅ Login SUCCESS! Feed token = {feed_token[:20]}...", flush=True)
+        print("="*60, flush=True)
         return jwt_token, feed_token
 
     except Exception as e:
-        print(f"🛑 Login exception: {e}")
+        print(f"🛑 Login EXCEPTION: {repr(e)}", flush=True)
         ws_status = f"🛑 Login Error: {str(e)[:60]}"
         return None, None
 
