@@ -317,6 +317,9 @@ HTML_TEMPLATE = """
                             <div class="metric-label">Auto-Sync Status (3:35 PM)</div>
                             <div class="metric-value" id="drive-status" style="font-size: 14px; color: #58a6ff;">Waiting for market close...</div>
                         </div>
+                        <div style="text-align: right;">
+                            <a href="/test_drive" target="_blank" class="btn btn-secondary" style="padding: 6px 12px; font-size: 11px;">Test Connection</a>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -511,6 +514,42 @@ def upload_to_drive(file_path):
     except Exception as e:
         drive_upload_status = f"❌ Drive Error: {str(e)[:40]}"
         print(f"❌ Google Drive Upload Error: {e}")
+
+@app.route('/test_drive')
+def test_drive():
+    global drive_upload_status
+    try:
+        gcp_json_str = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
+        folder_id = os.environ.get("GCP_DRIVE_FOLDER_ID")
+        
+        if not gcp_json_str or not folder_id:
+            drive_upload_status = "⚠️ Keys missing (Setup Render Env)"
+            return "❌ Missing Environment Variables: GCP_SERVICE_ACCOUNT_JSON or GCP_DRIVE_FOLDER_ID", 400
+            
+        drive_upload_status = "🔄 Testing Drive..."
+        creds_dict = json.loads(gcp_json_str)
+        creds = service_account.Credentials.from_service_account_info(
+            creds_dict, scopes=['https://www.googleapis.com/auth/drive.file']
+        )
+        service = build('drive', 'v3', credentials=creds)
+        
+        # Create a tiny test file
+        test_file_path = os.path.join(DATA_DIR, "test_connection.txt")
+        with open(test_file_path, "w") as f:
+            f.write("Google Drive API is working perfectly from Render!")
+            
+        file_metadata = {
+            'name': 'test_connection.txt',
+            'parents': [folder_id]
+        }
+        media = MediaFileUpload(test_file_path, mimetype='text/plain')
+        file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        drive_upload_status = f"✅ Test Success! (ID: {file.get('id')})"
+        return "✅ Success! Check your Google Drive folder, 'test_connection.txt' should be there.", 200
+        
+    except Exception as e:
+        drive_upload_status = f"❌ Test Error: {str(e)[:40]}"
+        return f"❌ Connection Error: {str(e)}", 500
 
 @app.route('/download')
 def download_all():
