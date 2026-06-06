@@ -8,3 +8,4 @@ websocket-client
 logzero
 google-api-python-client
 google-auth
+huggingface_hub

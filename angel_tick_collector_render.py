@@ -13,9 +13,7 @@ from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 import pyotp
 import urllib.request
 import json
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from huggingface_hub import HfApi
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -99,16 +97,16 @@ def background_monitor():
                 has_flushed_today = False
                 
             if now.hour == 15 and now.minute >= 35 and not has_flushed_today:
-                print("🏁 Market Closed! Auto-flushing and backing up to Drive...")
-                from __main__ import flush_buffer_to_disk, create_daily_zip_file, upload_to_drive # local import just in case
+                print("🏁 Market Closed! Auto-flushing and backing up to HF...")
+                from __main__ import flush_buffer_to_disk, create_daily_zip_file, upload_to_huggingface # local import just in case
                 try:
                     flush_buffer_to_disk()
                     date_str = now.strftime("%Y-%m-%d")
                     zip_file = create_daily_zip_file(date_str)
                     if zip_file:
-                        upload_to_drive(zip_file)
+                        upload_to_huggingface(zip_file)
                 except Exception as e:
-                    print("Auto-flush/Drive error:", e)
+                    print("Auto-flush/HF error:", e)
                 has_flushed_today = True
                 last_flush_date = today_date
                 
@@ -311,14 +309,14 @@ HTML_TEMPLATE = """
                     </form>
                 </div>
                 <div style="margin-top: 20px; border-top: 1px solid #21262d; padding-top: 15px;">
-                    <div class="card-title" style="margin-bottom: 10px;">Cloud Backup (Google Drive)</div>
+                    <div class="card-title" style="margin-bottom: 10px;">Cloud Backup (Hugging Face)</div>
                     <div class="metric-row" style="margin-bottom:0; padding-bottom:0; border:none;">
                         <div>
                             <div class="metric-label">Auto-Sync Status (3:35 PM)</div>
                             <div class="metric-value" id="drive-status" style="font-size: 14px; color: #58a6ff;">Waiting for market close...</div>
                         </div>
                         <div style="text-align: right;">
-                            <a href="/test_drive" target="_blank" class="btn btn-secondary" style="padding: 6px 12px; font-size: 11px;">Test Connection</a>
+                            <a href="/test_upload" target="_blank" class="btn btn-secondary" style="padding: 6px 12px; font-size: 11px;">Test Connection</a>
                         </div>
                     </div>
                 </div>
@@ -485,67 +483,74 @@ def create_daily_zip_file(date_str):
         print(f"Merge error: {e}")
         return None
 
-def upload_to_drive(file_path):
+def upload_to_huggingface(file_path):
     global drive_upload_status, last_uploaded_file
     try:
-        gcp_json_str = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
-        folder_id = os.environ.get("GCP_DRIVE_FOLDER_ID")
+        hf_token = os.environ.get("HF_TOKEN")
+        hf_dataset = os.environ.get("HF_DATASET_ID")
         
-        if not gcp_json_str or not folder_id:
+        if not hf_token or not hf_dataset:
             drive_upload_status = "⚠️ Keys missing (Setup Render Env)"
             return
             
-        drive_upload_status = "🔄 Uploading to Drive..."
-        creds_dict = json.loads(gcp_json_str)
-        creds = service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=['https://www.googleapis.com/auth/drive']
-        )
-        service = build('drive', 'v3', credentials=creds)
+        drive_upload_status = "🔄 Uploading to HF..."
+        api = HfApi(token=hf_token)
         
-        file_metadata = {
-            'name': os.path.basename(file_path),
-            'parents': [folder_id]
-        }
-        media = MediaFileUpload(file_path, mimetype='application/zip')
-        file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        drive_upload_status = f"✅ Uploaded (ID: {file.get('id')})"
-        last_uploaded_file = os.path.basename(file_path)
-        print(f"✅ Google Drive Upload Success: {file_path}")
+        filename = os.path.basename(file_path)
+        path_in_repo = f"data/{filename}"
+        
+        try:
+            api.dataset_info(hf_dataset)
+        except Exception:
+            api.create_repo(repo_id=hf_dataset, repo_type="dataset", private=True)
+            
+        api.upload_file(
+            path_or_fileobj=file_path,
+            path_in_repo=path_in_repo,
+            repo_id=hf_dataset,
+            repo_type="dataset"
+        )
+        
+        drive_upload_status = f"✅ Uploaded (HF)"
+        last_uploaded_file = filename
+        print(f"✅ HF Upload Success: {file_path}")
     except Exception as e:
-        drive_upload_status = f"❌ Drive Error: {str(e)[:40]}"
-        print(f"❌ Google Drive Upload Error: {e}")
+        drive_upload_status = f"❌ HF Error: {str(e)[:40]}"
+        print(f"❌ HF Upload Error: {e}")
 
-@app.route('/test_drive')
-def test_drive():
+@app.route('/test_upload')
+def test_upload():
     global drive_upload_status
     try:
-        gcp_json_str = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
-        folder_id = os.environ.get("GCP_DRIVE_FOLDER_ID")
+        hf_token = os.environ.get("HF_TOKEN")
+        hf_dataset = os.environ.get("HF_DATASET_ID")
         
-        if not gcp_json_str or not folder_id:
+        if not hf_token or not hf_dataset:
             drive_upload_status = "⚠️ Keys missing (Setup Render Env)"
-            return "❌ Missing Environment Variables: GCP_SERVICE_ACCOUNT_JSON or GCP_DRIVE_FOLDER_ID", 400
+            return "❌ Missing Environment Variables: HF_TOKEN or HF_DATASET_ID", 400
             
-        drive_upload_status = "🔄 Testing Drive..."
-        creds_dict = json.loads(gcp_json_str)
-        creds = service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=['https://www.googleapis.com/auth/drive']
-        )
-        service = build('drive', 'v3', credentials=creds)
+        drive_upload_status = "🔄 Testing HF..."
+        api = HfApi(token=hf_token)
+        
+        try:
+            api.dataset_info(hf_dataset)
+        except Exception:
+            api.create_repo(repo_id=hf_dataset, repo_type="dataset", private=True)
         
         # Create a tiny test file
         test_file_path = os.path.join(DATA_DIR, "test_connection.txt")
         with open(test_file_path, "w") as f:
-            f.write("Google Drive API is working perfectly from Render!")
+            f.write("Hugging Face API is working perfectly from Render!")
             
-        file_metadata = {
-            'name': 'test_connection.txt',
-            'parents': [folder_id]
-        }
-        media = MediaFileUpload(test_file_path, mimetype='text/plain')
-        file = service.files().create(body=file_metadata, media_body=media, fields='id', supportsAllDrives=True).execute()
-        drive_upload_status = f"✅ Test Success! (ID: {file.get('id')})"
-        return "✅ Success! Check your Google Drive folder, 'test_connection.txt' should be there.", 200
+        api.upload_file(
+            path_or_fileobj=test_file_path,
+            path_in_repo="test_connection.txt",
+            repo_id=hf_dataset,
+            repo_type="dataset"
+        )
+        
+        drive_upload_status = f"✅ Test Success (HF)"
+        return f"✅ Success! Check your Hugging Face dataset ({hf_dataset}), 'test_connection.txt' should be there.", 200
         
     except Exception as e:
         import html as html_module
