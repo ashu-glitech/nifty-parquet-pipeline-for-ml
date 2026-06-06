@@ -543,13 +543,15 @@ def test_drive():
             'parents': [folder_id]
         }
         media = MediaFileUpload(test_file_path, mimetype='text/plain')
-        file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        file = service.files().create(body=file_metadata, media_body=media, fields='id', supportsAllDrives=True).execute()
         drive_upload_status = f"✅ Test Success! (ID: {file.get('id')})"
         return "✅ Success! Check your Google Drive folder, 'test_connection.txt' should be there.", 200
         
     except Exception as e:
-        drive_upload_status = f"❌ Test Error: {str(e)[:40]}"
-        return f"❌ Connection Error: {str(e)}", 500
+        import html as html_module
+        safe_err = html_module.escape(str(e))
+        drive_upload_status = f"❌ Test Error: {str(e)[:60]}"
+        return f"<pre style='color:red;font-size:16px;'>❌ Connection Error:\n\n{safe_err}</pre>", 500
 
 @app.route('/download')
 def download_all():
