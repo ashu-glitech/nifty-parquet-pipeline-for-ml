@@ -498,7 +498,7 @@ def upload_to_drive(file_path):
         drive_upload_status = "🔄 Uploading to Drive..."
         creds_dict = json.loads(gcp_json_str)
         creds = service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=['https://www.googleapis.com/auth/drive.file']
+            creds_dict, scopes=['https://www.googleapis.com/auth/drive']
         )
         service = build('drive', 'v3', credentials=creds)
         
@@ -529,7 +529,7 @@ def test_drive():
         drive_upload_status = "🔄 Testing Drive..."
         creds_dict = json.loads(gcp_json_str)
         creds = service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=['https://www.googleapis.com/auth/drive.file']
+            creds_dict, scopes=['https://www.googleapis.com/auth/drive']
         )
         service = build('drive', 'v3', credentials=creds)
         
