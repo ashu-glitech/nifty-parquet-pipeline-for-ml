@@ -14,6 +14,8 @@ import pyotp
 import urllib.request
 import json
 from huggingface_hub import HfApi
+import gc
+import pyarrow as pa
 
 # ==========================================
 # ⚙️ CONFIGURATION
@@ -162,6 +164,11 @@ def save_parquet_chunk():
         print(f"💾 Saved {len(df)} rows → {filename}")
     except Exception as e:
         print(f"❌ Parquet save error: {e}")
+    finally:
+        if 'df' in locals():
+            del df
+        gc.collect()
+        pa.default_memory_pool().release_unused()
 
 # ==========================================
 # 📊 DASHBOARD HTML
@@ -458,6 +465,11 @@ def flush_buffer_to_disk():
                 df.to_parquet(os.path.join(date_dir, f"nifty_ticks_{ts}.parquet"), index=False)
             except Exception as e: 
                 print(f"Flush error: {e}")
+            finally:
+                if 'df' in locals():
+                    del df
+                gc.collect()
+                pa.default_memory_pool().release_unused()
 
 def create_daily_zip_file(date_str):
     date_dir = os.path.join(DATA_DIR, date_str)
@@ -482,6 +494,11 @@ def create_daily_zip_file(date_str):
     except Exception as e:
         print(f"Merge error: {e}")
         return None
+    finally:
+        if 'merged_df' in locals():
+            del merged_df
+        gc.collect()
+        pa.default_memory_pool().release_unused()
 
 def upload_to_huggingface(file_path):
     global drive_upload_status, last_uploaded_file
@@ -644,6 +661,11 @@ def download_date(date_str):
                          download_name=f'nifty_MERGED_{date_str}.zip')
     except Exception as e:
         return f"Merge error: {e}", 500
+    finally:
+        if 'merged_df' in locals():
+            del merged_df
+        gc.collect()
+        pa.default_memory_pool().release_unused()
 
 
 
@@ -808,10 +830,17 @@ def start_websocket():
 
         # ── Start WebSocket with HUGE retry (practically infinite) ───
         try:
+            global sws
+            if sws is not None:
+                try:
+                    print("🔌 Closing old WebSocket connection to prevent thread leak...")
+                    sws.close_connection()
+                except Exception as ex:
+                    print(f"⚠️ Error closing old WebSocket: {ex}")
+            
             ws_status = "🔌 Connecting WebSocket..."
             print("🦅 Starting WebSocket with 9999 retries (nonstop data)...", flush=True)
 
-            global sws
             sws = SmartWebSocketV2(
                 jwt_token, API_KEY, CLIENT_CODE, feed_token,
                 max_retry_attempt = 9999,   # Never give up!
@@ -842,10 +871,26 @@ def start_websocket():
         print("⏳ 10s pause then reconnect check...")
         time.sleep(10)
 
+def cleanup_old_data():
+    """Deletes data directories from previous trading days to save ephemeral disk space and cache RAM."""
+    print("🧹 Cleaning up old market data directories...")
+    try:
+        ist = pytz.timezone('Asia/Kolkata')
+        today_str = datetime.datetime.now(ist).strftime("%Y-%m-%d")
+        if os.path.exists(DATA_DIR):
+            for date_dir in glob.glob(os.path.join(DATA_DIR, "????-??-??")):
+                if os.path.basename(date_dir) != today_str:
+                    print(f"🗑️ Deleting old data directory: {date_dir}")
+                    import shutil
+                    shutil.rmtree(date_dir, ignore_errors=True)
+    except Exception as e:
+        print(f"⚠️ Cleanup error: {e}")
+
 # ==========================================
 # 🚀 MAIN
 # ==========================================
 if __name__ == '__main__':
+    cleanup_old_data()
     monitor_thread = threading.Thread(target=background_monitor, daemon=True)
     monitor_thread.start()
     
